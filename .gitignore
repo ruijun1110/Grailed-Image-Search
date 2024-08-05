@@ -14,7 +14,7 @@ config.py
 notebooks/
 
 # testing images
-Model_testing_image/
+Model_testing_img/
 
 #json files
 json_files/
