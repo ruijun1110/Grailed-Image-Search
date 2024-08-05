@@ -6,6 +6,20 @@ __pycache__/
 # C extensions
 *.so
 
+# config
+config.ini
+config.py
+
+# notebooks
+notebooks/
+
+# testing images
+Model_testing_image/
+
+#json files
+json_files/
+
+
 # Distribution / packaging
 .Python
 build/
