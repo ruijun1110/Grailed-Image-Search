@@ -1,10 +1,16 @@
 import motor.motor_asyncio
-from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+from pymongo.errors import (
+    ConnectionFailure,
+    ServerSelectionTimeoutError,
+    BulkWriteError,
+)
 from typing import List, Dict, Set
 import asyncio
 import logging
 import os
 import aiohttp
+from pymongo import DeleteMany
+from bson import ObjectId
 
 
 class DatabaseHandler:
@@ -114,13 +120,141 @@ class DatabaseHandler:
                 return checkpoint
             else:
                 self.logger.info("No checkpoint found, starting from beginning")
+                total_items = await self.get_total_items()
                 return {
                     "designer_slug": None,
                     "last_scroll_count": 0,
-                    "total_items_scraped": 0,
+                    "total_items_scraped": total_items,
+                    "timestamp": None,
                 }
         except Exception as e:
             self.logger.error(f"Error loading checkpoint: {str(e)}")
+            raise
+
+    async def save_image_embedding_checkpoint(self, checkpoint: Dict):
+        await self.ensure_connection()
+        try:
+            checkpoint["type"] = "image"
+            result = await self.db.embedding_checkpoints.replace_one(
+                {"type": "image"}, checkpoint, upsert=True
+            )
+            self.logger.info(f"Checkpoint saved: {checkpoint}")
+            return result.upserted_id or result.modified_count
+        except Exception as e:
+            self.logger.error(f"Error saving checkpoint: {str(e)}")
+            raise
+
+    async def load_image_embedding_checkpoint(self) -> Dict:
+        await self.ensure_connection()
+        try:
+            checkpoint = await self.db.embedding_checkpoints.find_one({"type": "image"})
+            if checkpoint:
+                self.logger.info(f"Loaded image embedding checkpoint: {checkpoint}")
+                return checkpoint
+            else:
+                self.logger.info(
+                    "No image embedding checkpoint found, starting from beginning"
+                )
+                return {
+                    "type": "image",
+                    "last_processed_id": None,
+                    "total_items_processed": 0,
+                    "timestamp": None,
+                }
+        except Exception as e:
+            self.logger.error(f"Error loading checkpoint: {str(e)}")
+            raise
+
+    async def save_text_embedding_checkpoint(self, checkpoint: Dict):
+        await self.ensure_connection()
+        try:
+            checkpoint["type"] = "text"
+            result = await self.db.embedding_checkpoints.replace_one(
+                {"type": "text"}, checkpoint, upsert=True
+            )
+            self.logger.info(f"Checkpoint saved: {checkpoint}")
+            return result.upserted_id or result.modified_count
+        except Exception as e:
+            self.logger.error(f"Error saving checkpoint: {str(e)}")
+            raise
+
+    async def load_text_embedding_checkpoint(self) -> Dict:
+        await self.ensure_connection()
+        try:
+            checkpoint = await self.db.embedding_checkpoints.find_one({"type": "text"})
+            if checkpoint:
+                self.logger.info(f"Loaded text embedding checkpoint: {checkpoint}")
+                return checkpoint
+            else:
+                self.logger.info(
+                    "No text embedding checkpoint found, starting from beginning"
+                )
+                return {
+                    "type": "text",
+                    "last_processed_id": None,
+                    "total_items_processed": 0,
+                    "timestamp": None,
+                }
+        except Exception as e:
+            self.logger.error(f"Error loading checkpoint: {str(e)}")
+            raise
+
+    async def get_emebdding_status(self) -> Dict:
+        await self.ensure_connection()
+        try:
+            image_checkpoint = await self.load_image_embedding_checkpoint()
+            text_checkpoint = await self.load_text_embedding_checkpoint()
+            return {
+                "image": {
+                    "last_processed_id": image_checkpoint["last_processed_id"],
+                    "total_items_processed": image_checkpoint["total_items_processed"],
+                    "timestamp": image_checkpoint["timestamp"],
+                },
+                "text": {
+                    "last_processed_id": text_checkpoint["last_processed_id"],
+                    "total_items_processed": text_checkpoint["total_items_processed"],
+                    "timestamp": text_checkpoint["timestamp"],
+                },
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting embedding status: {str(e)}")
+            raise
+
+    async def get_items_batch(
+        self, last_processed_id: str = None, batch_size: int = 32
+    ):
+        """
+        Get a batch of items from the database, starting after the last processed ID.
+
+        Args:
+            last_processed_id (str): ID of the last processed item
+            batch_size (int): Number of items to retrieve in the batch
+
+        Returns:
+            list: A list of items (documents) from the database
+        """
+        await self.ensure_connection()
+        try:
+            query = {}
+            if last_processed_id:
+                query["_id"] = {"$gt": ObjectId(last_processed_id)}
+
+            cursor = self.db.items.find(query).sort("_id", 1).limit(batch_size)
+            batch = await cursor.to_list(length=batch_size)
+            return batch
+        except Exception as e:
+            self.logger.error(f"Error retrieving batch: {str(e)}")
+            raise
+
+    async def update_checkpoint_total_items(self):
+        try:
+            total_items = await self.get_total_items()
+            await self.db.checkpoints.update_one(
+                {}, {"$set": {"total_items_scraped": total_items}}, upsert=True
+            )
+            self.logger.info(f"Updated checkpoint total_items_scraped to {total_items}")
+        except Exception as e:
+            self.logger.error(f"Error updating checkpoint total items: {str(e)}")
             raise
 
     async def get_total_items(self) -> int:
@@ -181,16 +315,16 @@ class DatabaseHandler:
             f"Finished downloading {len(image_urls)} images to {output_dir}"
         )
 
-    async def get_storage_size(self) -> int:
-        await self.ensure_connection()
-        try:
-            stats = await self.db.command("dbStats")
-            storage_size = stats.get("storageSize", 0)
-            self.logger.info(f"Current database storage size: {storage_size} bytes")
-            return storage_size
-        except Exception as e:
-            self.logger.error(f"Error getting database storage size: {str(e)}")
-            raise
+    # async def get_storage_size(self) -> int:
+    #     await self.ensure_connection()
+    #     try:
+    #         stats = await self.db.command("dbstats")
+    #         # storage_size = stats.get("storageSize", 0)
+    #         self.logger.info(f"Current database storage size: {storage_size} bytes")
+    #         return storage_size
+    #     except Exception as e:
+    #         self.logger.error(f"Error getting database storage size: {str(e)}")
+    #         raise
 
     async def load_data(self):
         await self.ensure_connection()
@@ -252,15 +386,19 @@ class DatabaseHandler:
         # Use the get_image_urls_by_ids method to fetch the image URLs
         return await self.get_image_urls_by_ids(item_ids)
 
-    async def delete_low_count_designers(self):
+    async def delete_low_count_designers(self, threshold: int):
         await self.ensure_connection()
         try:
             # Step 1: Get all designers and their counts
             designers = await self.db.designers.find().to_list(length=None)
-            low_count_designers = [d["name"] for d in designers if d["count"] < 20]
+            low_count_designers = [
+                d["name"] for d in designers if d["count"] < threshold
+            ]
 
             if not low_count_designers:
-                self.logger.info("No designers with less than 20 counts found.")
+                self.logger.info(
+                    f"No designers with less than {threshold} counts found."
+                )
                 return
 
             # Step 2: Delete items associated with low-count designers
@@ -278,6 +416,8 @@ class DatabaseHandler:
                 f"Low-count designers removed: {', '.join(low_count_designers)}"
             )
 
+            await self.update_checkpoint_total_items()
+
         except Exception as e:
             self.logger.error(
                 f"Error deleting low-count designers and their items: {str(e)}"
@@ -292,3 +432,178 @@ class DatabaseHandler:
         except Exception as e:
             self.logger.error(f"Error fetching designer counts: {str(e)}")
             raise
+
+    async def delete_documents_by_title_substring(self, substring: List[str]):
+        await self.ensure_connection()
+        deleted_count = 0
+        try:
+            for sub in substring:
+                result = await self.db.items.delete_many(
+                    {"title": {"$regex": sub, "$options": "i"}}
+                )
+                deleted_count += result.deleted_count
+                self.logger.info(
+                    f"Deleted {deleted_count} documents containing '{sub}' in the title"
+                )
+            await self.update_checkpoint_total_items()
+            return deleted_count
+        except Exception as e:
+            self.logger.error(
+                f"Error deleting documents with title containing '{substring}': {str(e)}"
+            )
+            raise
+
+    async def count_duplicate_titles(self):
+        await self.ensure_connection()
+        try:
+            pipeline = [
+                {"$group": {"_id": "$title", "count": {"$sum": 1}}},
+                {"$match": {"count": {"$gt": 1}}},
+                {"$project": {"title": "$_id", "count": 1, "_id": 0}},
+                {"$sort": {"count": -1}},
+            ]
+            cursor = self.db.items.aggregate(pipeline)
+            duplicate_titles = await cursor.to_list(length=None)
+
+            total_duplicates = sum(doc["count"] - 1 for doc in duplicate_titles)
+            self.logger.info(
+                f"Found {len(duplicate_titles)} unique titles with duplicates, totaling {total_duplicates} duplicate documents"
+            )
+            print(f"Found {len(duplicate_titles)} unique titles with duplicates")
+
+            return duplicate_titles, total_duplicates
+        except Exception as e:
+            self.logger.error(f"Error counting duplicate titles: {str(e)}")
+            raise
+
+    async def delete_all_repeated_titles(self, batch_size: int = 1000) -> int:
+        total_deleted = 0
+        try:
+            while True:
+                # Find duplicates
+                pipeline = [
+                    {
+                        "$group": {
+                            "_id": "$title",
+                            "uniqueIds": {"$addToSet": "$_id"},
+                            "count": {"$sum": 1},
+                        }
+                    },
+                    {"$match": {"count": {"$gt": 1}}},
+                    {"$limit": batch_size},
+                ]
+
+                cursor = self.db.items.aggregate(pipeline, allowDiskUse=True)
+
+                delete_ops = []
+                async for doc in cursor:
+                    # Keep the first occurrence, delete the rest
+                    ids_to_delete = doc["uniqueIds"][1:]
+                    delete_ops.append(DeleteMany({"_id": {"$in": ids_to_delete}}))
+
+                if not delete_ops:
+                    break  # No more duplicates found
+
+                # Execute batch delete
+                try:
+                    result = await self.db.items.bulk_write(delete_ops, ordered=False)
+                    deleted_in_batch = result.deleted_count
+                    total_deleted += deleted_in_batch
+                    self.logger.info(
+                        f"Deleted {deleted_in_batch} duplicate documents in this batch"
+                    )
+                except BulkWriteError as bwe:
+                    deleted_in_batch = bwe.details["nRemoved"]
+                    total_deleted += deleted_in_batch
+                    self.logger.warning(
+                        f"BulkWriteError: Deleted {deleted_in_batch} documents, but some operations failed."
+                    )
+
+                # Update the checkpoint periodically
+                if total_deleted % (batch_size * 10) == 0:
+                    await self.update_checkpoint_total_items()
+
+            # Final update to the checkpoint
+            await self.update_checkpoint_total_items()
+
+            self.logger.info(
+                f"Total documents with repeated titles deleted: {total_deleted}"
+            )
+            return total_deleted
+
+        except Exception as e:
+            self.logger.error(
+                f"Error deleting documents with repeated titles: {str(e)}"
+            )
+            raise
+
+    async def delete_items_by_designers(
+        self, designer_names: List[str]
+    ) -> Dict[str, int]:
+        """
+        Delete documents in the items collection that contain any of the specified designer names in the designers array field.
+        Args:
+            designer_names (List[str]): A list of designer names to match against the designers array field.
+
+        Returns:
+            Dict[str, int]: A dictionary containing the number of documents deleted and the number of designers processed.
+                - 'deleted_count': The number of documents that were deleted.
+                - 'designers_processed': The number of designer names that were processed.
+
+        Raises:
+            Exception: If there's an error during the database operation, it logs the error and re-raises the exception.
+
+        Example:
+            result = await db_handler.delete_items_by_designers(['Gucci', 'Prada', 'Louis Vuitton'])
+            print(f"Deleted {result['deleted_count']} items for {result['designers_processed']} designers")
+        """
+
+        await self.ensure_connection()
+        try:
+            # Construct the query to match documents where designers array contains any of the specified names
+            query = {"designers": {"$in": designer_names}}
+
+            # Execute the delete operation
+            result = await self.db.items.delete_many(query)
+
+            deleted_count = result.deleted_count
+            self.logger.info(
+                f"Deleted {deleted_count} items for designers: {', '.join(designer_names)}"
+            )
+
+            await self.update_checkpoint_total_items()
+
+            return {
+                "deleted_count": deleted_count,
+                "designers_processed": len(designer_names),
+            }
+        except Exception as e:
+            self.logger.error(
+                f"Error deleting items for designers {designer_names}: {str(e)}"
+            )
+            raise
+
+    async def get_documents_by_ids(self, ids: List[str]) -> List[Dict]:
+        """
+        Fetch documents from MongoDB by their IDs.
+
+        Args:
+            ids (List[str]): List of document IDs to fetch.
+
+        Returns:
+            List[Dict]: List of documents matching the given IDs.
+        """
+        await self.ensure_connection()
+        try:
+            documents = await self.db.items.find({"id": {"$in": ids}}).to_list(None)
+            # self.logger.info(f"Fetched {len(documents)} documents from MongoDB")
+            return documents
+        except Exception as e:
+            # self.logger.error(f"Error fetching documents by IDs: {str(e)}")
+            raise
+
+
+class ItemLimitExceeded(Exception):
+    """Exception raised when the item limit is exceeded."""
+
+    pass
