@@ -11,12 +11,6 @@ from clip_embedding_generator import CLIPEmbeddingsGenerator
 from pydantic import BaseModel
 import logging
 from typing import List, Dict
-from transformers import (
-    CLIPModel,
-    CLIPTextModelWithProjection,
-    AutoTokenizer,
-    CLIPImageProcessor,
-)
 
 app = Quart(__name__)
 app = cors(app)
@@ -47,18 +41,6 @@ def checkpoint_callback(checkpoint):
     global latest_checkpoint
     latest_checkpoint = checkpoint
     logger.info(f"Checkpoint updated: {checkpoint}")
-
-
-# def image_embedding_checkpoint_callback(checkpoint):
-#     global latest_image_embedding_checkpoint
-#     latest_image_embedding_checkpoint = checkpoint
-#     image_embedding_logger.info(f"Image embedding checkpoint updated: {checkpoint}")
-
-
-# def text_embedding_checkpoint_callback(checkpoint):
-#     global latest_text_embedding_checkpoint
-#     latest_text_embedding_checkpoint = checkpoint
-#     text_embedding_logger.info(f"Text embedding checkpoint updated: {checkpoint}")
 
 
 scraper = GrailedScraper(config, log_queue, checkpoint_callback)
@@ -93,7 +75,7 @@ def run_scraper():
     asyncio.run(scraper.resume())
 
 
-@app.route("/api/start_scraping", methods=["POST"])
+@app.route("/api/scraping/start", methods=["POST"])
 def start_scraping():
     if not scraper.is_scraping:
         threading.Thread(target=run_scraper).start()
@@ -102,7 +84,7 @@ def start_scraping():
         return jsonify({"message": "Scraping is already in progress"}), 400
 
 
-@app.route("/api/stop_scraping", methods=["POST"])
+@app.route("/api/scraping/stop", methods=["POST"])
 async def stop_scraping():
     if scraper.is_scraping:
         await scraper.stop_scraping()
@@ -111,7 +93,7 @@ async def stop_scraping():
         return jsonify({"message": "No scraping process is currently running"}), 400
 
 
-@app.route("/api/scraping_logs", methods=["GET"])
+@app.route("/api/scraping/logs", methods=["GET"])
 def scraping_logs():
     def generate():
         while True:
@@ -124,98 +106,110 @@ def scraping_logs():
     return Response(generate(), content_type="text/event-stream")
 
 
-@app.route("/api/delete_items_by_substring", methods=["POST"])
+@app.route("/api/scraping/delete/substrings", methods=["DELETE"])
 async def delete_items_by_substring():
-    data = await request.json
-    if "substrings" not in data or not isinstance(data["substrings"], list):
-        return jsonify({"ERROR": "Invalid or missing 'substrings' in request"}), 400
+    substrings = request.args.getlist("substring")
+    if substrings:
+        try:
+            deleted_count = await db_handler.delete_documents_by_title_substring(
+                substrings
+            )
+            return (
+                jsonify(
+                    {
+                        "message": f"Deleted {deleted_count} documents",
+                    }
+                ),
+                200,
+            )
+        except Exception as e:
+            logger.error(f"Error in delete_items_by_substring: {str(e)}")
+            return jsonify({"error": str(e)}), 500
+    else:
+        return jsonify({"error": "No substrings provided"}), 400
 
-    substrings = data["substrings"]
-    try:
-        deleted_count = await db_handler.delete_documents_by_title_substring(substrings)
-        return (
-            jsonify(
-                {
-                    "message": f"Deleted {deleted_count} documents",
-                }
-            ),
-            200,
-        )
-    except Exception as e:
-        logger.error(f"Error in delete_items_by_substring: {str(e)}")
-        return jsonify({"error": str(e)}), 500
 
-
-@app.route("/api/delete_items_by_designers", methods=["POST"])
+@app.route("/api/scraping/delete/designers", methods=["DELETE"])
 async def delete_items_by_designers():
-    data = await request.json
-    if "designers" not in data or not isinstance(data["designers"], list):
-        return jsonify({"error": "Invalid or missing 'designers' in request"}), 400
+    designers = request.args.getlist("designer")
+    if designers:
+        try:
+            result = await db_handler.delete_items_by_designers(designers)
+            return (
+                jsonify(
+                    {
+                        "message": f"Deleted {result['deleted_count']} documents for {result['designers_processed']} designers",
+                    }
+                ),
+                200,
+            )
+        except Exception as e:
+            logger.error(f"Error in delete_items_by_designers: {str(e)}")
+            return jsonify({"error": str(e)}), 500
+    else:
+        return jsonify({"error": "No designers provided"}), 400
 
-    designers = data["designers"]
-    try:
-        result = await db_handler.delete_items_by_designers(designers)
-        return (
-            jsonify(
-                {
-                    "message": f"Deleted {result['deleted_count']} documents for {result['designers_processed']} designers",
-                }
-            ),
-            200,
-        )
-    except Exception as e:
-        logger.error(f"Error in delete_items_by_designers: {str(e)}")
-        return jsonify({"error": str(e)}), 500
 
-
-@app.route("/api/delete_low_count_designers", methods=["POST"])
+@app.route("/api/scraping/delete/low_count", methods=["DELETE"])
 async def delete_low_count_designers():
-    data = await request.json
-    threshold = data.get("threshold")
 
-    if threshold is None or not isinstance(threshold, int):
-        return jsonify({"error": "Invalid or missing threshold value"}), 400
+    threshold = request.args.get("threshold", type=int)
 
-    try:
-        result = await db_handler.delete_low_count_designers(threshold)
-        return (
-            jsonify(
-                {
-                    "message": f"Deleted {result['deleted_items']} items associated with {result['deleted_designers']} low-count designers",
-                }
-            ),
-            200,
-        )
-    except Exception as e:
-        logger.error(f"Error in delete_low_count_designers: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/start_image_embedding", methods=["POST"])
-async def start_image_embedding():
-    await image_embedding_generator.start_embedding()
-    return jsonify({"message": "Image embedding process started"}), 200
+    if threshold:
+        try:
+            result = await db_handler.delete_low_count_designers(threshold)
+            return (
+                jsonify(
+                    {
+                        "message": f"Deleted {result['deleted_items']} items associated with {result['deleted_designers']} low-count designers",
+                    }
+                ),
+                200,
+            )
+        except Exception as e:
+            logger.error(f"Error in delete_low_count_designers: {str(e)}")
+            return jsonify({"error": str(e)}), 500
+    else:
+        return jsonify({"error": "No threshold provided"}), 400
 
 
-@app.route("/api/start_text_embedding", methods=["POST"])
-async def start_text_embedding():
-    await text_embedding_generator.start_embedding()
-    return jsonify({"message": "Text embedding process started"}), 200
+@app.route("/api/embeddings/<embedding_type>/start", methods=["POST"])
+async def start_embedding(embedding_type):
+    if embedding_type not in ["image", "text"]:
+        return jsonify({"error": "Invalid embedding type"}), 400
+
+    if embedding_type == "image":
+        await image_embedding_generator.start_embedding()
+    else:
+        await text_embedding_generator.start_embedding()
+
+    return (
+        jsonify(
+            {"message": f"{embedding_type.capitalize()} embedding process started"}
+        ),
+        200,
+    )
 
 
-@app.route("/api/stop_image_embedding", methods=["POST"])
-async def stop_image_embedding():
-    await image_embedding_generator.stop_embedding()
-    return jsonify({"message": "Image embedding process stopping..."}), 200
+@app.route("/api/embeddings/<embedding_type>/stop", methods=["POST"])
+async def stop_embedding(embedding_type):
+    if embedding_type not in ["image", "text"]:
+        return jsonify({"error": "Invalid embedding type"}), 400
+
+    if embedding_type == "image":
+        await image_embedding_generator.stop_embedding()
+    else:
+        await text_embedding_generator.stop_embedding()
+
+    return (
+        jsonify(
+            {"message": f"{embedding_type.capitalize()} embedding process stopping..."}
+        ),
+        200,
+    )
 
 
-@app.route("/api/stop_text_embedding", methods=["POST"])
-async def stop_text_embedding():
-    await text_embedding_generator.stop_embedding()
-    return jsonify({"message": "Text embedding process stopping..."}), 200
-
-
-@app.route("/api/image_embedding_logs", methods=["GET"])
+@app.route("/api/embeddings/image/logs", methods=["GET"])
 async def image_embedding_logs():
     def generate():
         while True:
@@ -228,7 +222,7 @@ async def image_embedding_logs():
     return Response(generate(), content_type="text/event-stream")
 
 
-@app.route("/api/text_embedding_logs", methods=["GET"])
+@app.route("/api/embeddings/text/logs", methods=["GET"])
 async def text_embedding_logs():
     def generate():
         while True:
@@ -241,7 +235,7 @@ async def text_embedding_logs():
     return Response(generate(), content_type="text/event-stream")
 
 
-@app.route("/api/get_scraping_status", methods=["GET"])
+@app.route("/api/scraping/status", methods=["GET"])
 async def get_scraping_status():
     if latest_checkpoint:
         checkpoint_callback(latest_checkpoint)
@@ -259,7 +253,17 @@ async def get_scraping_status():
             return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/get_image_embedding_status", methods=["GET"])
+@app.route("/api/embeddings/<embedding_type>/status", methods=["GET"])
+async def get_embedding_status(embedding_type):
+    if embedding_type not in ["image", "text"]:
+        return jsonify({"error": "Invalid embedding type"}), 400
+
+    if embedding_type == "image":
+        return await get_image_embedding_status()
+    else:
+        return await get_text_embedding_status()
+
+
 async def get_image_embedding_status():
     if image_embedding_generator.latest_embedding_checkpoint:
         image_embedding_generator.embedding_checkpoint_callback(
@@ -278,7 +282,6 @@ async def get_image_embedding_status():
             return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/get_text_embedding_status", methods=["GET"])
 async def get_text_embedding_status():
     if text_embedding_generator.latest_embedding_checkpoint:
         text_embedding_generator.embedding_checkpoint_callback(
@@ -313,16 +316,14 @@ def process_pinecone_results(results: Dict) -> List[SimilaritySearchResult]:
     ]
 
 
-@app.route("/api/similarity_search", methods=["POST"])
+@app.route("/api/search", methods=["GET"])
 async def similarity_search():
     try:
         server_logger.info("Received similarity search request")
-        data = await request.json
-        image_url = data.get("image_url")
-        text_query = data.get("text_query")
+        image_url = request.args.get("image_url")
+        text_query = request.args.get("text_query")
+        top_k = request.args.get("top_k", default=10, type=int)
         # category = data.get("category")
-        top_k = data.get("top_k", 10)
-        server_logger.info(f"Request data: {data}")
 
         image_results = []
         text_results = []
@@ -331,14 +332,12 @@ async def similarity_search():
             image_results = await image_embedding_generator.search_similar_image(
                 image_url, top_k
             )
-            server_logger.info(f"Image results: {image_results}")
 
         if text_query:
             # Load CLIP text model and tokenizer
             text_results = await text_embedding_generator.search_similar_text(
                 text_query, top_k
             )
-            server_logger.info(f"Text results: {text_results}")
 
         id_score_map = {}
         # Combine results and remove duplicates
