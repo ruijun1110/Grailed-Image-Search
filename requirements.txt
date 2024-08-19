@@ -1,0 +1,16 @@
+aiohttp==3.10.0
+matplotlib==3.9.2
+motor==3.5.1
+Pillow==10.4.0
+pinecone==5.0.1
+playwright==1.45.0
+pydantic==2.8.2
+pymongo==4.8.0
+pytz==2024.1
+quart==0.19.6
+quart_cors==0.7.0
+Requests==2.32.3
+rich==13.7.1
+torch==2.4.0
+tqdm==4.66.4
+transformers==4.43.3
