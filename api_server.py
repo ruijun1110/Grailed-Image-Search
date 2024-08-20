@@ -351,14 +351,14 @@ async def similarity_search():
         # Sort the results by score, from highest to lowest
         sorted_results = sorted(id_score_map.items(), key=lambda x: x[1], reverse=True)
 
-        server_logger.critical(f"Sorted results: {sorted_results}")
+        # server_logger.critical(f"Sorted results: {sorted_results}")
 
         # Fetch corresponding documents from MongoDB
         mongo_docs = await db_handler.get_documents_by_ids(
             [id for id, _ in sorted_results]
         )
 
-        server_logger.critical(f"Mongo docs: {mongo_docs}")
+        # server_logger.critical(f"Mongo docs: {mongo_docs}")
 
         # Create a mapping of id to mongo document for easy lookup
         mongo_docs_map = {doc["id"]: doc for doc in mongo_docs}
