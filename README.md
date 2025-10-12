@@ -57,7 +57,7 @@ Please visit each repository for component-specific documentation and setup inst
 
 ## Demo
 
-[Placeholder for demo video]
+[![Video](https://img.youtube.com/vi/nmeZIZTwvkM/maxresdefault.jpg)](https://www.youtube.com/watch?v=nmeZIZTwvkM)
 
 ## Contributing
 
